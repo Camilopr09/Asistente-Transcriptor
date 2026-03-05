@@ -15,7 +15,7 @@ async function uploadToAssemblyAI(buffer: Buffer): Promise<string> {
             authorization: apiKey,
             "content-type": "application/octet-stream",
         },
-        body: buffer,
+        body: new Uint8Array(buffer),
     });
 
     if (!response.ok) {
