@@ -1,10 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAssemblyAIClient } from "@/lib/assemblyai";
-import { writeFile, mkdir, unlink } from "fs/promises";
-import path from "path";
-import { v4 as uuidv4 } from "uuid";
 import type { Utterance, TranscriptionResult } from "@/types";
 
+// Increase body size limit for video uploads (500MB)
 export const config = {
     api: {
         bodyParser: false,
@@ -46,74 +44,60 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // Save file temporarily
-        const tmpDir = path.join(process.cwd(), "tmp");
-        await mkdir(tmpDir, { recursive: true });
+        const client = getAssemblyAIClient();
 
-        const fileExt = file.name.split(".").pop() || "mp4";
-        const tmpFilePath = path.join(tmpDir, `${uuidv4()}.${fileExt}`);
-
+        // Upload file directly to AssemblyAI (no disk storage needed)
         const bytes = await file.arrayBuffer();
         const buffer = Buffer.from(bytes);
-        await writeFile(tmpFilePath, buffer);
 
-        try {
-            // Use AssemblyAI to transcribe with speaker diarization
-            const client = getAssemblyAIClient();
+        const uploadUrl = await client.files.upload(buffer);
 
-            const transcript = await client.transcripts.transcribe({
-                audio: tmpFilePath,
-                speaker_labels: true,
-                language_code: "es",
-                punctuate: true,
-                format_text: true,
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                speech_models: ["universal-2"] as any,
-            });
+        // Transcribe with speaker diarization
+        const transcript = await client.transcripts.transcribe({
+            audio: uploadUrl,
+            speaker_labels: true,
+            language_code: "es",
+            punctuate: true,
+            format_text: true,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            speech_models: ["universal-2"] as any,
+        });
 
-            if (transcript.status === "error") {
-                throw new Error(
-                    transcript.error || "Error al transcribir el audio."
-                );
-            }
-
-            // Process utterances
-            const utterances: Utterance[] = (transcript.utterances || []).map(
-                (u) => ({
-                    speaker: u.speaker,
-                    text: u.text,
-                    start: u.start,
-                    end: u.end,
-                })
+        if (transcript.status === "error") {
+            throw new Error(
+                transcript.error || "Error al transcribir el audio."
             );
-
-            // Build speaker map
-            const speakers = new Set(utterances.map((u) => u.speaker));
-            const speakerMap: Record<string, string> = {};
-            let index = 1;
-            speakers.forEach((speaker) => {
-                speakerMap[speaker] = `Hablante ${index}`;
-                index++;
-            });
-
-            const result: TranscriptionResult = {
-                utterances,
-                speakerMap,
-            };
-
-            return NextResponse.json(result);
-        } finally {
-            // Clean up temp file
-            try {
-                await unlink(tmpFilePath);
-            } catch {
-                // Ignore cleanup errors
-            }
         }
+
+        // Process utterances
+        const utterances: Utterance[] = (transcript.utterances || []).map(
+            (u) => ({
+                speaker: u.speaker,
+                text: u.text,
+                start: u.start,
+                end: u.end,
+            })
+        );
+
+        // Build speaker map
+        const speakers = new Set(utterances.map((u) => u.speaker));
+        const speakerMap: Record<string, string> = {};
+        let index = 1;
+        speakers.forEach((speaker) => {
+            speakerMap[speaker] = `Hablante ${index}`;
+            index++;
+        });
+
+        const result: TranscriptionResult = {
+            utterances,
+            speakerMap,
+        };
+
+        return NextResponse.json(result);
     } catch (error) {
         console.error("Transcription error:", error);
         const message =
-            error instanceof Error ? error.message : "Error interno del servidor.";
+            error instanceof Error ? error.message : "Error al procesar el video.";
         return NextResponse.json({ error: message }, { status: 500 });
     }
 }
